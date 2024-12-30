@@ -1,0 +1,40 @@
+import re
+import random
+import time
+
+# 定义 Cookies 池
+cookies_pool = [
+    'XSRF-TOKEN=CvzV1EOEWrJKR2Jl6R0rZwKf; SCF=AtFU-cirCNkkm5U3pSXl0Ttu3IAwh_4F1R6W8HP9MO7Zl0_fyAqxt58kCy-wnlg0jxqtPWnjoGHprz9qPolE58Y.; SUB=_2A25KbsPzDeRhGeFJ7VcY8C3OyD-IHXVpAlk7rDV8PUNbmtAbLUvRkW9Nf0NhRIbAQeEFmwRYjendGiPxd0-RQBn1; SUBP=0033WrSXqPxfM725Ws9jqgMF55529P9D9WF846kBvqB--0N6OBsXT8mb5JpX5KzhUgL.FoMNSo-4eheEe0e2dJLoIN-LxKqL1-eL1h.LxKBLBonL12BLxKqLB-BLBKzLxKBLBonL1h5LxKML1hzLBo.LxKML1hzLBo.LxKnL1h2LB-2LxKqL1KnL12-LxKML1-2L1hBLxKMLB-eLBKnLxKMLB-eLBKnLxKnL1-zL12zLxKnL1-zL12zt; ALF=02_1737638051; WBPSESS=VC13eXCDS6sgLONS22hQp6x6Pbm-JvqlmE8TeCnSi7B-udOCYM385BGNiGY9y24HGM9Cx-t9y1M1zm9mS61eP_nVxaoCLtDIDEASCrmMrFjSR4QAWToOI9SizoygQudYOmJO87NHSIGwN65g10AblQ==',
+    'XSRF-TOKEN=XEtFdBH3rNOk418Zv6WzXWL_; SCF=At8eKTkKrV2QMYTRUgiKevxZCC0MjRaN-f_ZG6iK0c9VXPVy2K3q58gx6sG3aFNmxK0IJRm4kE2etcNOq-kWyaw.; SUB=_2A25Kbsx0DeRhGeNL61MY-C7IzjuIHXVpAkG8rDV8PUNbmtAYLVLQkW9NSScloQRXla5lGACbT2xBm36vdeyv641O; SUBP=0033WrSXqPxfM725Ws9jqgMF55529P9D9W5TyR7mv8ClK7AeZ9kbkHpS5JpX5KzhUgL.Fo-feh241h5XSKM2dJLoIp7LxKML1KBLBKnLxKqL1hnLBoMfSK5p1Kn7Sh-N; ALF=02_1737640228; WBPSESS=0lTWkJICwN37lNk5zD28yvRY5F7oAy1lLfAIsDzIope3bSDg1XgXSlb--c9bhzuBVotVxwBpDzH6FVve2GOV7j5oyEFOXTkSESqQrghXR2C06MnUuX2iDUEov93Im5gXAgBjGajMuzfIs0zDzs5ZkA==',
+    'XSRF-TOKEN=XEtFdBH3rNOk418Zv6WzXWL_; SCF=At8eKTkKrV2QMYTRUgiKevxZCC0MjRaN-f_ZG6iK0c9VXPVy2K3q58gx6sG3aFNmxK0IJRm4kE2etcNOq-kWyaw.; _s_tentry=weibo.com; Apache=7629304358916.231.1735058327548; SINAGLOBAL=7629304358916.231.1735058327548; ULV=1735058327635:1:1:1:7629304358916.231.1735058327548:; SUB=_2A25KaXPUDeRhGeFH7FMT-C_PyD2IHXVpB4kcrDV8PUNbmtAYLVnSkW9NeoZnZHxqVpE76zhPJzQAhd1P8OpgH4rs; SUBP=0033WrSXqPxfM725Ws9jqgMF55529P9D9WhvCmEAdpmrRFG4o_nQi24F5JpX5KzhUgL.FoM4S02E1h20e022dJLoIp7LxKML1KBLBKnLxKqL1hnLBoMN1KMpeonpe0ep; ALF=02_1737789572; WBPSESS=Dt2hbAUaXfkVprjyrAZT_BJwr8kiMIQ-VFQg645VtzFYLSs5KFSaWKIHgsqddGghuSq_wIpi0TWNdhVQSjUv4Oytit-ECgaMjjrhHvr2Tvm8tpQz90u_ipO6R8xRrM0_7t6R5kCQm1NVXNID0PQfFDRYpQU3fyWlvxEasrBj9EwLJejbqxanVh0Iw6ETIHS5IqX9hN5ay-OB45mSAagvkg==',
+    'XSRF-TOKEN=XEtFdBH3rNOk418Zv6WzXWL_; SCF=At8eKTkKrV2QMYTRUgiKevxZCC0MjRaN-f_ZG6iK0c9VXPVy2K3q58gx6sG3aFNmxK0IJRm4kE2etcNOq-kWyaw.; _s_tentry=weibo.com; Apache=7629304358916.231.1735058327548; SINAGLOBAL=7629304358916.231.1735058327548; ULV=1735058327635:1:1:1:7629304358916.231.1735058327548:; SUB=_2A25KaTKzDeRhGeFJ71AQ-CfEwzqIHXVpB8p7rDV8PUNbmtANLRXekW9Nf-cFgi5glmCe0jxV0DO2dHke4VgTQkEi; SUBP=0033WrSXqPxfM725Ws9jqgMF55529P9D9WWhU2eeKumHYVKjG1_GBU.b5JpX5KzhUgL.FoMNShzp1h.R1hq2dJLoIp7LxKML1KBLBKnLxKqL1hnLBoMNS0BEeKn41hnc; ALF=02_1737805795; WBPSESS=Dt2hbAUaXfkVprjyrAZT_KiUPV_J6B5vYAZgc2z5_SSD9BQjUpFpfj3QyPfwiwYCP5hxtzk_Cl-2-dtVQdNZjNUi2xfg48_7g4Wv0c1Lh6sgYBCmrLA__Vs02CLTFvMLFSaviCKGBJtiNIvyonRzDWbEypDT--Sj1MNhVApVo1WQ2F8dnmq2JmdtSFKJOiXsHsS93YQakQ-tiGsh9hHwRg==',
+    'XSRF-TOKEN=XEtFdBH3rNOk418Zv6WzXWL_; SCF=At8eKTkKrV2QMYTRUgiKevxZCC0MjRaN-f_ZG6iK0c9VXPVy2K3q58gx6sG3aFNmxK0IJRm4kE2etcNOq-kWyaw.; _s_tentry=weibo.com; Apache=7629304358916.231.1735058327548; SINAGLOBAL=7629304358916.231.1735058327548; ULV=1735058327635:1:1:1:7629304358916.231.1735058327548:; SUB=_2A25KaTNiDeRhGeFN7VsW8CbIwjSIHXVpB8qqrDV8PUNbmtANLW32kW9NQ_2zkpmQDbx2H3E2qtN-uQKA-xACqfH-; SUBP=0033WrSXqPxfM725Ws9jqgMF55529P9D9WFhyLXAcKd4k4P0uAhQe84j5JpX5KzhUgL.FoM0So.NehnX1Kn2dJLoIp7LxKML1KBLBKnLxKqL1hnLBoMNe0q4S05RSh.R; ALF=02_1737805874; WBPSESS=Dt2hbAUaXfkVprjyrAZT_B8na-2kOLQoRBNipy3VDusJV5ZA3Wz9HPk0DhgYnplJLsreinzKOATVce4qdrxWKwUvmU_VymNKOi-srJfvvOb8xPxvfYP1th2PGYmqibGy5GTYT2VK2I6CvcVWyr0TYSkGIY_0gIZCkOZuQOh1w2paL4QstDY7_SkumAqS6PFUqmLIR-BQSTp5bWC_JmKTSg==',
+    'SCF=AgvQFyUiiR77GbOnt2JY4N1Wz970ODXm4WuvHuniTEvpDpbWUNdrJgXxwkPBKFxCy28nFyhq2XA0M1ggAs5qmnA.; SUB=_2A25KdHeSDeRhGeFK6FYW8y3FwjyIHXVpCPVarDV8PUNbmtAbLW2gkW9NQ2SNhATWfu_lWZScTEmGJyZccRGCku1T; SUBP=0033WrSXqPxfM725Ws9jqgMF55529P9D9W5bBrH.5Q.Qu3xZDsneynK.5NHD95QNSheXS0e01K.7Ws4Dqcj4i--fiKyWi-8Wi--fiKyWiKLFi--fiK.7iK.pi--Xi-zRiKyWi--NiKLWiKnXi--Xi-iWi-iWUNUN; ALF=02_1737987266; XSRF-TOKEN=1VoRiPhms8yPOZkby4QU7aVy; WBPSESS=Dq2F8tC90wTYRPKk7SiS5pO486xhWDMvzhK3nLm6Rwp621hrtDYBpeAVMf6BAJXreMzKH40efpJJCBHw2UB_9idjxCUmCuqsqPjpl3I9Tqj_875vXXIbTC4vMFbPiwxyYF_VUQZ-Pqep012z1y1grw==',
+]
+
+
+# # 提取 Cookies
+# def extract_cookies(raw_cookie):
+#     cookies = re.split(r';\s*', raw_cookie)
+#     cookie_dict = {}
+#     for cookie in cookies:
+#         if '=' in cookie:
+#             key, value = cookie.split('=', 1)
+#             cookie_dict[key] = value
+#     return cookie_dict
+
+# # 获取随机 Cookies
+# def get_random_cookie():
+#     raw_cookie = random.choice(cookies_pool)  # 从池中随机选择 Cookies
+#     return extract_cookies(raw_cookie)
+
+# # 请求失败后延时并切换 Cookies
+# def handle_request_failure(response, attempt, retries):
+#     if response.status_code == 418:  # 418 错误表示被封禁
+#         print(f"状态码 418，正在切换 Cookies 重试...")
+#         time.sleep(random.uniform(5, 10))  # 延时避免频繁请求
+#         return get_random_cookie()  # 返回新的 Cookies
+#     elif response.status_code != 200:
+#         print(f"请求失败，状态码：{response.status_code}，尝试第 {attempt + 1}/{retries} 次")
+#         time.sleep(2 ** attempt)  # 指数退避算法延时重试
+#     return None
