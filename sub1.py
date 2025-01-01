@@ -1,4 +1,4 @@
-import requests
+import requests 
 import os
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -17,6 +17,7 @@ formatted_time = now.strftime("%Y-%m-%d-%H-%M-%S")
 log_filename = f"error_{formatted_time}.log"
 logging.basicConfig(filename=log_filename, level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
+
 # 提取cookies
 def extract_cookies(raw_cookie):
     cookies = re.split(r';\s*', raw_cookie)
@@ -30,6 +31,7 @@ def extract_cookies(raw_cookie):
     extracted_cookies['_s_tentry'] = 'passport.weibo.com'
     extracted_cookies['Apache'] = cookie_dict.get('SINAGLOBAL', '')
     return extracted_cookies
+
 
 # 获取页面响应
 def get_the_list_response(q, p, cookies):
@@ -54,30 +56,92 @@ def get_the_list_response(q, p, cookies):
 
 # 格式化时间
 def format_time(time_str):
+    """
+    根据微博常见的时间描述，转成标准 %Y-%m-%d %H:%M:%S。
+    如果字符串中本身带了xxxx年，就用它的年份；否则，如果只有月日，则使用当前系统年份。
+    """
     now = datetime.now()
+    
+    # 1) 若包含 '秒前'
     if '秒前' in time_str:
         seconds = int(re.search(r'(\d+)', time_str).group(1))
-        time = now - timedelta(seconds=seconds)
+        time_obj = now - timedelta(seconds=seconds)
+        return time_obj.strftime('%Y-%m-%d %H:%M:%S'), None
+
+    # 2) 若包含 '分钟前'
     elif '分钟前' in time_str:
         minutes = int(re.search(r'(\d+)', time_str).group(1))
-        time = now - timedelta(minutes=minutes)
+        time_obj = now - timedelta(minutes=minutes)
+        return time_obj.strftime('%Y-%m-%d %H:%M:%S'), None
+
+    # 3) 若包含 '今天'
     elif '今天' in time_str:
-        time = now.strftime('%Y-%m-%d') + ' ' + time_str.split('今天')[1] + ':00'
-        time = datetime.strptime(time, '%Y-%m-%d %H:%M:%S')
-    elif '月' in time_str and '日' in time_str:
-        time = str(now.year) + ' ' + time_str.replace('月', '-').replace('日', '') + ':00'
-        time = datetime.strptime(time, '%Y %m-%d %H:%M:%S')
+        # 形如: 今天 20:09
+        time_part = time_str.split('今天')[1].strip()
+        # 如果time_part里没有冒号，可能需要特殊处理，这里假设一定有
+        time_str_parsed = f"{now.strftime('%Y-%m-%d')} {time_part}:00"
+        time_obj = datetime.strptime(time_str_parsed, '%Y-%m-%d %H:%M:%S')
+        return time_obj.strftime('%Y-%m-%d %H:%M:%S'), None
+
+    # 4) 若包含 '昨天'
     elif '昨天' in time_str:
         yesterday = now - timedelta(days=1)
-        time = yesterday.strftime('%Y-%m-%d') + ' ' + time_str.split('昨天')[1] + ':00'
-        time = datetime.strptime(time, '%Y-%m-%d %H:%M:%S')
+        time_part = time_str.split('昨天')[1].strip()
+        time_str_parsed = f"{yesterday.strftime('%Y-%m-%d')} {time_part}:00"
+        time_obj = datetime.strptime(time_str_parsed, '%Y-%m-%d %H:%M:%S')
+        return time_obj.strftime('%Y-%m-%d %H:%M:%S'), None
+
+    # 5) 若包含 '前天'
     elif '前天' in time_str:
         day_before_yesterday = now - timedelta(days=2)
-        time = day_before_yesterday.strftime('%Y-%m-%d') + ' ' + time_str.split('前天')[1] + ':00'
-        time = datetime.strptime(time, '%Y-%m-%d %H:%M:%S')
-    else:
-        return time_str, None
-    return time.strftime('%Y-%m-%d %H:%M:%S'), None
+        time_part = time_str.split('前天')[1].strip()
+        time_str_parsed = f"{day_before_yesterday.strftime('%Y-%m-%d')} {time_part}:00"
+        time_obj = datetime.strptime(time_str_parsed, '%Y-%m-%d %H:%M:%S')
+        return time_obj.strftime('%Y-%m-%d %H:%M:%S'), None
+
+    # 6) 若字符串里有明确的 "xxxx年xx月xx日 ..." 格式
+    #    用正则捕获年份、月份、日期、时间；优先用字符串自带的年份
+    match_full = re.match(
+        r'^(\d{4})年(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?$', 
+        time_str
+    )
+    if match_full:
+        year, month, day, hour, minute, second = match_full.groups()
+        if not second:
+            second = '00'
+        time_obj = datetime(int(year), int(month), int(day), int(hour), int(minute), int(second))
+        return time_obj.strftime('%Y-%m-%d %H:%M:%S'), None
+
+    # 7) 若字符串里没有xxxx年，但有 '月' 和 '日'
+    elif '月' in time_str and '日' in time_str:
+        # 默认使用当前系统年份
+        # 先把 "12月29日 20:09" => "12-29 20:09"
+        # 如果没有小时分钟，可能需要补，假设一定带"小时:分钟"
+        # 在末尾再补":00"
+        # e.g. "12月29日 20:09" => "2025 12-29 20:09:00"
+        # （假设 now.year=2025）
+        
+        # 用正则拆分一下:
+        # "12月29日 20:09" => month=12, day=29, rest_time=20:09
+        md_match = re.match(r'(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?', time_str)
+        if md_match:
+            month, day, hour, minute, second = md_match.groups()
+            if not second:
+                second = '00'
+            time_str_parsed = f"{now.year}-{month}-{day} {hour}:{minute}:{second}"
+            try:
+                time_obj = datetime.strptime(time_str_parsed, '%Y-%m-%d %H:%M:%S')
+                return time_obj.strftime('%Y-%m-%d %H:%M:%S'), None
+            except ValueError as e:
+                # 万一解析失败，就原样返回
+                return time_str, e
+        else:
+            # 如果进到这个分支却没匹配上，就返回原始
+            return time_str, None
+
+    # 8) 最终：都不匹配时，直接返回原始字符串
+    return time_str, None
+
 
 # 解析列表
 def parse_the_list(text):
@@ -86,31 +150,61 @@ def parse_the_list(text):
     lst = []
     for div in divs:
         mid = div.get('mid')
-        uid = div.select('div.card-feed > div.avator > a')
-        uid = uid[0].get('href').replace('.com/', '?').split('?')[1] if uid else None
+        # uid
+        uid_ele = div.select('div.card-feed > div.avator > a')
+        uid = uid_ele[0].get('href').replace('.com/', '?').split('?')[1] if uid_ele else None
+        
+        # 昵称
         p_last = div.select('div.card-feed > div.content > p:last-of-type')[-1]
         nick_name = p_last['nick-name'] if 'nick-name' in p_last.attrs else None
-        time = div.select('div.card-feed > div.content > div.from > a:first-of-type')
-        time = time[0].string.strip() if time else None
-        time, extra_info = format_time(time) if time else (None, None)
-        p = div.select('div.card-feed > div.content > p:last-of-type')
-        content = '\n'.join([para.replace('\u200b', '').strip() for para in list(p[0].strings)]) if p else None
-        comment = div.select('div.card > div.card-act > ul > li')[-2].text.strip() if div.select('div.card > div.card-act > ul > li') else '0'
-        lst.append((uid, nick_name, int(mid), content, time, comment, extra_info))
+        
+        # 时间
+        time_ele = div.select('div.card-feed > div.content > div.from > a:first-of-type')
+        raw_time_str = time_ele[0].string.strip() if time_ele else None
+        if raw_time_str:
+            parsed_time, extra_info = format_time(raw_time_str)
+        else:
+            parsed_time, extra_info = None, None
+        
+        # 内容
+        p_content = div.select('div.card-feed > div.content > p:last-of-type')
+        if p_content:
+            content = '\n'.join([para.replace('\u200b', '').strip() for para in list(p_content[0].strings)])
+        else:
+            content = None
+        
+        # 评论数 (一般在倒数第2个 li)
+        li_acts = div.select('div.card > div.card-act > ul > li')
+        if li_acts:
+            comment_text = li_acts[-2].text.strip()
+        else:
+            comment_text = '0'
+        
+        lst.append((
+            uid, 
+            nick_name, 
+            int(mid) if mid else None, 
+            content, 
+            parsed_time, 
+            comment_text, 
+            extra_info
+        ))
+    
     df = pd.DataFrame(lst, columns=['uid', 'nick_name', 'mid', 'content', 'time', 'comment', 'extra_info'])
     return df
 
+
 # 获取列表
-def get_the_list(q, p, cookies_pool, retries=3):
+def get_the_list(q, p, cookies_pool, retries=20):
     df_list = []
-    cookies = random.choice(cookies_pool)  # 初始随机选择一个cookies
+    # 初始随机选择一个cookies
+    cookies = random.choice(cookies_pool)
     cookies = extract_cookies(cookies)  # 将字符串解析为字典
 
     for i in range(1, p + 1):
         for attempt in range(retries):
             try:
                 response = get_the_list_response(q=q, p=i, cookies=cookies)
-
                 if response.status_code == 200:
                     df = parse_the_list(response.text)
                     if df.empty:
@@ -120,11 +214,6 @@ def get_the_list(q, p, cookies_pool, retries=3):
                         logging.info(f'第{i}页解析成功！')
                     break
 
-                # elif response.status_code == 418:  # 遇到418状态码时切换cookies
-                #     logging.warning(f'第{i}页请求失败 (状态码: 418)。更换cookies后重试...')
-                #     cookies = random.choice(cookies_pool)
-                #     cookies = extract_cookies(cookies)  # 切换新cookies并解析为字典
-                #     time.sleep(random.uniform(3, 7))  # 等待后重试
                 elif response.status_code == 418:  # 碰到418状态码切换 cookies
                     logging.warning(f'第{i}页请求失败 (状态码: 418)。更换 cookies 后重试...')
                     print(f'第{i}页请求失败 (状态码: 418)。更换 cookies 后重试...')
@@ -132,10 +221,10 @@ def get_the_list(q, p, cookies_pool, retries=3):
                     # 切换 cookies
                     old_cookies = cookies
                     cookies = random.choice(cookies_pool)
-                    print(f"更换 cookies: {old_cookies[:50]}... => {cookies[:50]}...")
+                    print(f"更换 cookies: {str(old_cookies)[:50]}... => {str(cookies)[:50]}...")
                     cookies = extract_cookies(cookies)  # 解析新 cookies
-                    
                     time.sleep(random.uniform(3, 7))  # 等待后重试
+
                 else:
                     logging.warning(f'第{i}页请求失败，状态码：{response.status_code}')
                     time.sleep(random.uniform(1, 3))  # 常规延迟
@@ -156,7 +245,10 @@ def get_sub1(raw_cookies, duplicated_name, sub1_foldername):
         os.makedirs(sub1_foldername)
     df = pd.read_csv(duplicated_name)
     df_unique = df.drop_duplicates(subset=['word'])
+    
+    # 已经爬过的目录列表
     dir_list = [x[1:-5] for x in os.listdir(sub1_foldername)]
+    
     for q in df_unique['word']:
         if q in dir_list:
             logging.info(f'{q}_已存在')
