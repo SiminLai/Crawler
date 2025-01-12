@@ -1,261 +1,211 @@
-import requests 
-import os
-from bs4 import BeautifulSoup
+import os 
+import requests
 import pandas as pd
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 import re
 import time
-import random
 import logging
-
+from bs4 import BeautifulSoup
+from urllib.parse import quote
 from cookies_manager import cookies_pool
+import random
 
 # 配置日志
 now = datetime.now()
 formatted_time = now.strftime("%Y-%m-%d-%H-%M-%S")
 log_filename = f"error_{formatted_time}.log"
-logging.basicConfig(filename=log_filename, level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+logging.basicConfig(
+    filename=log_filename,
+    level=logging.DEBUG,  # 设置更详细的日志级别
+    format='%(asctime)s %(levelname)s %(message)s'
+)
 
+BASE_API_URL = 'https://m.weibo.cn/api/container/getIndex'
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
+    "Referer": "https://weibo.com/",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "X-Requested-With": "XMLHttpRequest",
+}
 
-# 提取cookies
 def extract_cookies(raw_cookie):
+    """
+    解析Cookies字符串为字典
+    """
     cookies = re.split(r';\s*', raw_cookie)
-    fields = ['SINAGLOBAL', 'SUB', 'SUBP', 'ALF', '_s_tentry', 'Apache', 'ULV']
     cookie_dict = {}
     for cookie in cookies:
         if '=' in cookie:
             key, value = cookie.split('=', 1)
             cookie_dict[key] = value
-    extracted_cookies = {field: cookie_dict[field] for field in fields if field in cookie_dict}
-    extracted_cookies['_s_tentry'] = 'passport.weibo.com'
-    extracted_cookies['Apache'] = cookie_dict.get('SINAGLOBAL', '')
-    return extracted_cookies
+    return cookie_dict
 
+def clean_weibo_text(raw_html):
+    """
+    清理微博 HTML 内容，提取纯文本
+    """
+    soup = BeautifulSoup(raw_html, 'html.parser')
+    for a_tag in soup.find_all('a'):
+        a_tag.decompose()
+    for img_tag in soup.find_all('img'):
+        if img_tag.has_attr('alt'):
+            img_tag.replace_with(img_tag['alt'])
+        else:
+            img_tag.decompose()
+    clean_text = soup.get_text(separator=' ', strip=True)
+    return clean_text
 
-# 获取页面响应
-def get_the_list_response(q, p, cookies):
-    # 如果cookies是字符串，解析为字典
-    if isinstance(cookies, str):
-        cookies = extract_cookies(cookies)
+def get_full_text(post_id, cookies):
+    """
+    获取长微博的完整内容
+    """
+    url = f"https://m.weibo.cn/statuses/extend?id={post_id}"
+    try:
+        response = requests.get(url, headers=HEADERS, cookies=cookies, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get('data', {}).get('longTextContent', '')
+        else:
+            logging.error(f"获取长微博失败，状态码：{response.status_code}")
+    except Exception as e:
+        logging.error(f"获取长微博失败，错误信息：{e}")
+    return None
 
-    headers = {
-        'authority': 'rm.api.weibo.com',
-        'accept': '*/*',
-        'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
-        'Referer': 'https://weibo.com/',
-        'sec-fetch-dest': 'script',
-        'sec-fetch-mode': 'no-cors',
-        'sec-fetch-site': 'same-site',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+def handle_captcha():
+    """
+    处理验证码逻辑，暂停程序等待用户手动验证并输入更新后的 cookies
+    """
+    print("检测到验证码触发，请手动完成验证...")
+    captcha_url = "https://m.weibo.cn/captcha"  # 假设验证码链接为此，需根据实际调整
+    print(f"请在浏览器中访问以下链接完成验证：{captcha_url}")
+    input("完成验证后按 Enter 键继续：")
+    new_cookies = input("请输入更新后的 cookies：")
+    logging.info("已更新 cookies，程序继续执行。")
+    return extract_cookies(new_cookies)
+
+def get_posts_by_keyword(keyword, cookies, page=1):
+    """
+    获取指定关键词的帖子，并清洗内容
+    """
+    posts = []
+    params = {
+        'containerid': f'100103type=61&q={quote(keyword)}',
+        'page': page
     }
-    refer = f'https://s.weibo.com/weibo?q=%23{q}%23&page={p}'
-    r = requests.get(refer, cookies=cookies, timeout=10)
-    return r
 
+    retries = 500  # 最大重试次数
+    for attempt in range(retries):
+        try:
+            response = requests.get(BASE_API_URL, headers=HEADERS, cookies=cookies, params=params, timeout=10)
+            if response.status_code != 200:
+                raise Exception(f"状态码异常: {response.status_code}")
 
-# 格式化时间
-def format_time(time_str):
-    """
-    根据微博常见的时间描述，转成标准 %Y-%m-%d %H:%M:%S。
-    如果字符串中本身带了xxxx年，就用它的年份；否则，如果只有月日，则使用当前系统年份。
-    """
-    now = datetime.now()
-    
-    # 1) 若包含 '秒前'
-    if '秒前' in time_str:
-        seconds = int(re.search(r'(\d+)', time_str).group(1))
-        time_obj = now - timedelta(seconds=seconds)
-        return time_obj.strftime('%Y-%m-%d %H:%M:%S'), None
+            data = response.json()
 
-    # 2) 若包含 '分钟前'
-    elif '分钟前' in time_str:
-        minutes = int(re.search(r'(\d+)', time_str).group(1))
-        time_obj = now - timedelta(minutes=minutes)
-        return time_obj.strftime('%Y-%m-%d %H:%M:%S'), None
-
-    # 3) 若包含 '今天'
-    elif '今天' in time_str:
-        # 形如: 今天 20:09
-        time_part = time_str.split('今天')[1].strip()
-        # 如果time_part里没有冒号，可能需要特殊处理，这里假设一定有
-        time_str_parsed = f"{now.strftime('%Y-%m-%d')} {time_part}:00"
-        time_obj = datetime.strptime(time_str_parsed, '%Y-%m-%d %H:%M:%S')
-        return time_obj.strftime('%Y-%m-%d %H:%M:%S'), None
-
-    # 4) 若包含 '昨天'
-    elif '昨天' in time_str:
-        yesterday = now - timedelta(days=1)
-        time_part = time_str.split('昨天')[1].strip()
-        time_str_parsed = f"{yesterday.strftime('%Y-%m-%d')} {time_part}:00"
-        time_obj = datetime.strptime(time_str_parsed, '%Y-%m-%d %H:%M:%S')
-        return time_obj.strftime('%Y-%m-%d %H:%M:%S'), None
-
-    # 5) 若包含 '前天'
-    elif '前天' in time_str:
-        day_before_yesterday = now - timedelta(days=2)
-        time_part = time_str.split('前天')[1].strip()
-        time_str_parsed = f"{day_before_yesterday.strftime('%Y-%m-%d')} {time_part}:00"
-        time_obj = datetime.strptime(time_str_parsed, '%Y-%m-%d %H:%M:%S')
-        return time_obj.strftime('%Y-%m-%d %H:%M:%S'), None
-
-    # 6) 若字符串里有明确的 "xxxx年xx月xx日 ..." 格式
-    #    用正则捕获年份、月份、日期、时间；优先用字符串自带的年份
-    match_full = re.match(
-        r'^(\d{4})年(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?$', 
-        time_str
-    )
-    if match_full:
-        year, month, day, hour, minute, second = match_full.groups()
-        if not second:
-            second = '00'
-        time_obj = datetime(int(year), int(month), int(day), int(hour), int(minute), int(second))
-        return time_obj.strftime('%Y-%m-%d %H:%M:%S'), None
-
-    # 7) 若字符串里没有xxxx年，但有 '月' 和 '日'
-    elif '月' in time_str and '日' in time_str:
-        # 默认使用当前系统年份
-        # 先把 "12月29日 20:09" => "12-29 20:09"
-        # 如果没有小时分钟，可能需要补，假设一定带"小时:分钟"
-        # 在末尾再补":00"
-        # e.g. "12月29日 20:09" => "2025 12-29 20:09:00"
-        # （假设 now.year=2025）
-        
-        # 用正则拆分一下:
-        # "12月29日 20:09" => month=12, day=29, rest_time=20:09
-        md_match = re.match(r'(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?', time_str)
-        if md_match:
-            month, day, hour, minute, second = md_match.groups()
-            if not second:
-                second = '00'
-            time_str_parsed = f"{now.year}-{month}-{day} {hour}:{minute}:{second}"
-            try:
-                time_obj = datetime.strptime(time_str_parsed, '%Y-%m-%d %H:%M:%S')
-                return time_obj.strftime('%Y-%m-%d %H:%M:%S'), None
-            except ValueError as e:
-                # 万一解析失败，就原样返回
-                return time_str, e
-        else:
-            # 如果进到这个分支却没匹配上，就返回原始
-            return time_str, None
-
-    # 8) 最终：都不匹配时，直接返回原始字符串
-    return time_str, None
-
-
-# 解析列表
-def parse_the_list(text):
-    soup = BeautifulSoup(text, "html.parser")
-    divs = soup.select('div[action-type="feed_list_item"]')
-    lst = []
-    for div in divs:
-        mid = div.get('mid')
-        # uid
-        uid_ele = div.select('div.card-feed > div.avator > a')
-        uid = uid_ele[0].get('href').replace('.com/', '?').split('?')[1] if uid_ele else None
-        
-        # 昵称
-        p_last = div.select('div.card-feed > div.content > p:last-of-type')[-1]
-        nick_name = p_last['nick-name'] if 'nick-name' in p_last.attrs else None
-        
-        # 时间
-        time_ele = div.select('div.card-feed > div.content > div.from > a:first-of-type')
-        raw_time_str = time_ele[0].string.strip() if time_ele else None
-        if raw_time_str:
-            parsed_time, extra_info = format_time(raw_time_str)
-        else:
-            parsed_time, extra_info = None, None
-        
-        # 内容
-        p_content = div.select('div.card-feed > div.content > p:last-of-type')
-        if p_content:
-            content = '\n'.join([para.replace('\u200b', '').strip() for para in list(p_content[0].strings)])
-        else:
-            content = None
-        
-        # 评论数 (一般在倒数第2个 li)
-        li_acts = div.select('div.card > div.card-act > ul > li')
-        if li_acts:
-            comment_text = li_acts[-2].text.strip()
-        else:
-            comment_text = '0'
-        
-        lst.append((
-            uid, 
-            nick_name, 
-            int(mid) if mid else None, 
-            content, 
-            parsed_time, 
-            comment_text, 
-            extra_info
-        ))
-    
-    df = pd.DataFrame(lst, columns=['uid', 'nick_name', 'mid', 'content', 'time', 'comment', 'extra_info'])
-    return df
-
-
-# 获取列表
-def get_the_list(q, p, cookies_pool, retries=20):
-    df_list = []
-    # 初始随机选择一个cookies
-    cookies = random.choice(cookies_pool)
-    cookies = extract_cookies(cookies)  # 将字符串解析为字典
-
-    for i in range(1, p + 1):
-        for attempt in range(retries):
-            try:
-                response = get_the_list_response(q=q, p=i, cookies=cookies)
-                if response.status_code == 200:
-                    df = parse_the_list(response.text)
-                    if df.empty:
-                        logging.info(f'第{i}页解析完成，但没有内容。')
-                    else:
-                        df_list.append(df)
-                        logging.info(f'第{i}页解析成功！')
-                    break
-
-                elif response.status_code == 418:  # 碰到418状态码切换 cookies
-                    logging.warning(f'第{i}页请求失败 (状态码: 418)。更换 cookies 后重试...')
-                    print(f'第{i}页请求失败 (状态码: 418)。更换 cookies 后重试...')
-                    
-                    # 切换 cookies
-                    old_cookies = cookies
-                    cookies = random.choice(cookies_pool)
-                    print(f"更换 cookies: {str(old_cookies)[:50]}... => {str(cookies)[:50]}...")
-                    cookies = extract_cookies(cookies)  # 解析新 cookies
-                    time.sleep(random.uniform(3, 7))  # 等待后重试
-
+            # 检测是否触发验证码
+            if data.get("ok") == -100:
+                logging.warning("触发验证码，暂停程序等待手动验证...")
+                if attempt == retries - 1:
+                    print("已达到最大重试次数。")
+                    cookies = handle_captcha()
                 else:
-                    logging.warning(f'第{i}页请求失败，状态码：{response.status_code}')
-                    time.sleep(random.uniform(1, 3))  # 常规延迟
+                    cookies = extract_cookies(random.choice(cookies_pool))
+                    time.sleep(random.uniform(3, 7))
+                continue
 
-            except Exception as e:
-                logging.error(f'第{i}页解析失败，错误信息：{e}')
-                if attempt < retries - 1:
-                    time.sleep(2 ** attempt)  # 指数退避
-                else:
-                    break
-    return df_list
+            # 解析正常返回的帖子数据
+            cards = data.get('data', {}).get('cards', [])
+            for card in cards:
+                if card.get('card_type') == 9:
+                    mblog = card.get('mblog', {})
+                    post_id = mblog.get('id')
+                    raw_text = mblog.get('text', '')
+                    clean_text = clean_weibo_text(raw_text)
 
+                    if mblog.get('isLongText'):
+                        full_text = get_full_text(post_id, cookies)
+                        if full_text:
+                            clean_text = clean_weibo_text(full_text)
 
-# 主处理函数
-def get_sub1(raw_cookies, duplicated_name, sub1_foldername):
-    cookies = extract_cookies(raw_cookies)
+                    # 提取用户链接、日期、评论数
+                    user_link = mblog.get('user', {}).get('profile_url', '')
+                    date = mblog.get('created_at', '')
+                    reply_count = mblog.get('comments_count', 0)
+
+                    posts.append({
+                        'mid': post_id,
+                        'text': clean_text,
+                        'user_link': user_link,
+                        'date': date,
+                        'reply_count': reply_count
+                    })
+            return posts, cookies
+
+        except Exception as e:
+            logging.error(f'第 {page} 页解析失败，错误信息：{e}')
+            if attempt < retries - 1 and cookies_pool:
+                cookies = extract_cookies(random.choice(cookies_pool))
+                time.sleep(random.uniform(3, 7))
+            else:
+                break
+        time.sleep(random.uniform(3, 7))
+
+    return posts, cookies
+
+def get_all_posts_by_keyword(keyword, cookies, delay=2):
+    """
+    分页获取所有相关微博帖子
+    """
+    all_posts = []
+    page = 1
+
+    while True:
+        posts, cookies = get_posts_by_keyword(keyword, cookies, page=page)
+        if not posts:
+            break
+        all_posts.extend(posts)
+        page += 1
+        
+        # 随机延时，模拟真实用户操作
+        time.sleep(random.uniform(3, 7))
+
+    return all_posts
+
+def save_to_csv(data, filename):
+    """
+    将数据保存到 CSV 文件
+    """
+    df = pd.DataFrame(data)
+    df.to_csv(filename, index=False, encoding='utf-8-sig')
+    print(f'数据已保存到 {filename}')
+
+def get_sub1(sss, duplicated_name, sub1_foldername):
+    """
+    主流程：读取关键词并抓取数据
+    """
     if not os.path.exists(sub1_foldername):
         os.makedirs(sub1_foldername)
-    df = pd.read_csv(duplicated_name)
-    df_unique = df.drop_duplicates(subset=['word'])
-    
-    # 已经爬过的目录列表
-    dir_list = [x[1:-5] for x in os.listdir(sub1_foldername)]
-    
-    for q in df_unique['word']:
-        if q in dir_list:
-            logging.info(f'{q}_已存在')
-        else:
-            try:
-                df_list = get_the_list(q, 100, cookies_pool)
-                if df_list:
-                    pd.concat(df_list).to_csv(f'./{sub1_foldername}/#{q}#.csv', index=False, encoding='utf_8_sig')
-            except Exception as e:
-                logging.error(f'词条 "{q}" 处理失败，错误信息：{e}')
+
+    try:
+        df = pd.read_csv(duplicated_name)
+    except Exception as e:
+        logging.error(f'无法读取文件 {duplicated_name}，错误信息：{e}')
+        return
+
+    if 'word' not in df.columns:
+        logging.error(f"CSV 文件 {duplicated_name} 中缺少 'word' 列。")
+        return
+
+    hot_search_list = df['word'].tolist()
+    cookies = extract_cookies(sss)
+
+    for idx, keyword in enumerate(hot_search_list, start=1):
+        posts = get_all_posts_by_keyword(keyword, cookies)
+        output_path = os.path.join(sub1_foldername, f'{keyword}.csv')
+        save_to_csv(posts, output_path)
+        time.sleep(2)
+
+    print("帖子爬取完成。")

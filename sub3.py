@@ -1,16 +1,3 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-"""
-文件名: sub3.py
-
-功能: 爬取某一条“父评论”下的所有“子评论”。
-用法: 
-1) 需要先获得父评论的 comment_id (或 rootid)。假设它叫 parent_id
-2) 在爬虫启动时指定微博 MID 以及该父评论 ID
-3) 脚本会将爬到的数据保存到一个 CSV 文件里
-"""
-
 import os
 import pandas as pd
 import requests
@@ -19,176 +6,160 @@ import random
 import logging
 from bs4 import BeautifulSoup
 from datetime import datetime
-from cookies_manager import cookies_pool  # 你项目中的 cookies 管理
+from cookies_manager import cookies_pool
 
 # 日志配置
 now = datetime.now()
 formatted_time = now.strftime("%Y-%m-%d-%H-%M-%S")
-log_filename = f"error_sub3_{formatted_time}.log"
+log_filename = f"error_{formatted_time}.log"
 logging.basicConfig(filename=log_filename, level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 # Cookie处理
-def extract_cookies(raw_cookie: str) -> dict:
+def extract_cookies(raw_cookie):
     cookies = raw_cookie.split("; ")
     return {c.split("=")[0]: c.split("=")[1] for c in cookies if '=' in c}
 
 def switch_cookies():
-    """从 cookies_pool 中随机选取一条 Cookie 并转换成 requests 可用的字典"""
     return extract_cookies(random.choice(cookies_pool))
 
 # 时间格式化
-def format_time(time_str: str) -> str:
-    """
-    将微博返回的时间字符串转换为标准格式。
-    微博时间通常类似: 'Fri Dec 25 09:30:00 +0800 2020'
-    """
+def format_time(time_str):
     try:
         return datetime.strptime(time_str, '%a %b %d %H:%M:%S %z %Y').strftime('%Y-%m-%d %H:%M:%S')
     except ValueError as e:
         logging.error(f"时间解析错误: {e}, 输入时间: {time_str}")
         return time_str
 
-def parse_child_comments(data: dict) -> pd.DataFrame:
+def parse_comment_data(response_data):
     """
-    解析接口返回的子评论 JSON 数据，返回一个 DataFrame。
+    解析微博子评论和根评论信息，包括 rootComment 的 user 信息
     """
-    # data 里通常有 { "data": [...] } 结构
-    comments_list = data.get('data', [])
-    
-    if not isinstance(comments_list, list):
-        logging.error(f"评论数据结构异常: {comments_list}")
-        return pd.DataFrame()
+    comments = []
 
-    rows = []
-    for comment in comments_list:
-        try:
-            # 清理文本: 把 HTML 标签去掉
+    try:
+        # 提取根评论信息
+        root_comment = response_data.get('rootComment', [{}])[0]
+        root_comment_id = root_comment.get('id', None)
+        root_comment_text = BeautifulSoup(root_comment.get('text', ''), 'html.parser').get_text()
+
+        root_user = root_comment.get('user', {})
+        root_user_id = root_user.get('id', None)
+        root_user_name = root_user.get('screen_name', '未知用户')
+        root_user_verified = root_user.get('verified', False)
+
+        # 提取子评论信息
+        for comment in response_data.get('data', []):
+            comment_id = comment.get('id', None)
             comment_text = BeautifulSoup(comment.get('text', ''), 'html.parser').get_text()
+            created_at = format_time(comment.get('created_at', ''))
             user_name = comment.get('user', {}).get('screen_name', '未知用户')
-            like_count = comment.get('like_counts', comment.get('like_count', 0))
-            create_time = format_time(comment.get('created_at', ''))
+            like_count = comment.get('like_count', 0)
 
-            # 父评论文本也可以取出来看一看
-            parent_txt = ""
-            parent_info = comment.get('reply_comment', {})
-            if parent_info:
-                # 如果是对父评论再次回复，可以拿到 parent_info 的 text
-                parent_txt = BeautifulSoup(parent_info.get('text', ''), 'html.parser').get_text()
+            # 被回复内容
+            reply_text = comment.get('reply_original_text', None)
+            reply_id = comment.get('reply_id', None)
 
-            rows.append({
-                'user': user_name,
-                'child_text': comment_text,
-                'child_likes': like_count,
-                'child_time': create_time,
-                'parent_comment': parent_txt,
-                'child_comment_id': comment.get('id', None),
+            # 保存评论数据
+            comments.append({
+                'root_comment_id': root_comment_id,
+                'root_comment_text': root_comment_text,
+                'root_user_id': root_user_id,
+                'root_user_name': root_user_name,
+                'root_user_verified': root_user_verified,
+                'comment_id': comment_id,
+                'comment_text': comment_text,
+                'created_at': created_at,
+                'user_name': user_name,
+                'like_count': like_count,
+                'reply_text': reply_text,  # 被回复内容
+                'reply_id': reply_id,      # 被回复评论 ID
             })
-        except Exception as e:
-            logging.error(f"解析子评论异常: {e}，评论数据: {comment}")
-            continue
 
-    return pd.DataFrame(rows)
+    except Exception as e:
+        logging.error(f"解析评论数据异常: {e}")
 
-def get_child_comments(mid: str, parent_id: str) -> pd.DataFrame:
+    return pd.DataFrame(comments)
+
+def get_child_comments(root_comment_id):
     """
-    根据微博MID和某条评论(父评论)的parent_id获取所有子评论。
-    
-    参数:
-    mid       : 该条微博的 MID
-    parent_id : 父评论的 comment_id 或 rootid
-    
-    返回:
-    全部子评论的 DataFrame，如果为空则说明没有子评论或请求失败。
+    获取评论数据，返回整合的 DataFrame
     """
     cookies = switch_cookies()
     headers = {
-        'authority': 'weibo.com',
+        'authority': 'm.weibo.cn',
         'accept': 'application/json, text/plain, */*',
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'x-requested-with': 'XMLHttpRequest',
     }
 
-    all_child_comments = []
-    max_id = 0  # 分页标识
-    retries = 5
+    max_id = 0
+    all_comments = []
+    retries = 500  # 最大尝试次数
+    attempt_count = 0
 
     while True:
-        for attempt in range(retries):
+        while attempt_count < retries:
             try:
-                # 注意这里要带上 parent_id(父评论ID) 和 fetch_level=1
-                # count=20 每页多少条，max_id 用于翻页
-                url = (
-                    "https://weibo.com/ajax/statuses/buildComments"
-                    f"?flow=0&is_reload=1&id={mid}"
-                    "&is_show_bulletin=2&is_mix=0"
-                    "&fetch_level=1"
-                    f"&count=20&max_id={max_id}"
-                    f"&parent_id={parent_id}"
-                )
-
-                response = requests.get(url, headers=headers, cookies=cookies, timeout=10)
+                url = 'https://m.weibo.cn/comments/hotFlowChild'
+                params = {'cid': root_comment_id, 'max_id': max_id}
+                response = requests.get(url, headers=headers, cookies=cookies, params=params, timeout=10)
                 response.encoding = 'utf-8'
 
-                # 检查防爬
-                if response.status_code == 418 or "<html>" in response.text.lower():
-                    logging.error("触发反爬或Cookies已失效，切换Cookies重试...")
-                    cookies = switch_cookies()
-                    time.sleep(1)
-                    continue
+                if response.status_code != 200:
+                    logging.error(f"请求失败，状态码: {response.status_code}")
+                    break
 
                 data = response.json()
-                logging.info(f"子评论接口返回: {data}")
 
-                # 如果 data 里没有 'data' 或者 data['data'] 是空，说明无更多子评论
-                if 'data' not in data or len(data.get('data', [])) == 0:
-                    logging.warning("没有更多子评论了，或已全部爬取完成。")
-                    # 如果已经有累积数据，就合并返回
-                    if all_child_comments:
-                        return pd.concat(all_child_comments, ignore_index=True)
-                    else:
-                        return pd.DataFrame()
+                if data.get("ok") == -100:
+                    logging.warning("触发验证码，更换 Cookies...")
+                    cookies = switch_cookies()
+                    attempt_count += 1
+                    time.sleep(random.uniform(1, 3))
+                    continue
 
-                # 解析子评论
-                df = parse_child_comments(data)
-                if not df.empty:
-                    all_child_comments.append(df)
+                if not data.get('data'):
+                    logging.info("没有更多评论，结束抓取。")
+                    return pd.concat(all_comments, ignore_index=True) if all_comments else pd.DataFrame()
 
-                # 翻页: 更新 max_id
-                new_max_id = data.get('max_id', 0)
-                if new_max_id == 0 or new_max_id == max_id:
-                    # 如果下一页 max_id 还是0 或者没变化，就表示已经到底了
-                    return pd.concat(all_child_comments, ignore_index=True)
-                max_id = new_max_id
-                # 成功拿到数据后 break 出 for retry
+                # 解析子评论并将结果加入整体列表
+                comments_df = parse_comment_data(data)
+                if not comments_df.empty:
+                    all_comments.append(comments_df)
+
+                max_id = data.get('max_id', 0)
+                if max_id == 0:
+                    return pd.concat(all_comments, ignore_index=True) if all_comments else pd.DataFrame()
+
+                time.sleep(random.uniform(1, 3))
                 break
 
             except Exception as e:
-                logging.error(f"子评论请求异常: {e}")
-                # 指数退避策略：遇到异常先休息再重试
-                time.sleep(2 ** attempt + random.uniform(0, 2))
+                logging.error(f"请求评论异常: {e}")
+                time.sleep(random.uniform(3, 7))
 
-        else:
-            # 如果重试完都失败，就返回已经获取到的数据，或者空
-            logging.error("多次请求失败，提前结束爬取。")
-            return pd.concat(all_child_comments, ignore_index=True) if all_child_comments else pd.DataFrame()
+        if attempt_count >= retries:
+            print(f"请访问以下链接完成验证: https://m.weibo.cn/comments/hotFlowChild?cid={root_comment_id}")
+            new_cookies = input("验证完成后，请输入新的 Cookies 并按回车键继续：")
+            cookies = extract_cookies(new_cookies)
+            logging.info("已更新新的 Cookies。")
+            attempt_count = 0  # 重置尝试计数
+
+    # 返回整合的 DataFrame
+    return pd.concat(all_comments, ignore_index=True) if all_comments else pd.DataFrame()
 
 # 主程序
 if __name__ == "__main__":
-    """
-    1) 先获取微博的 MID
-    2) 再获取指定父评论的 parent_id (在微博JSON中一般是 comment_id 或 rootid)
-    """
-    mid = input("请输入微博 MID: ")
-    parent_id = input("请输入父评论的 comment_id 或 rootid: ")
-    
-    print(f"正在抓取微博 {mid} 下 parent_id={parent_id} 的子评论...")
-    child_comments = get_child_comments(mid, parent_id)
+    root_comment_id = input("请输入根评论 ID: ")
+    print(f"正在抓取根评论 {root_comment_id} 的所有子评论...")
 
-    if not child_comments.empty:
-        output_path = f'child_comments_{mid}_{parent_id}.csv'
-        child_comments.to_csv(output_path, index=False, encoding='utf-8-sig')
-        print(f"微博 {mid} 的子评论(父评论ID={parent_id})已保存到 {output_path}！")
+    all_comments_df = get_child_comments(root_comment_id)
+
+    if not all_comments_df.empty:
+        output_path = f'child_comments_{root_comment_id}.csv'
+        all_comments_df.to_csv(output_path, index=False, encoding='utf-8-sig')
+        print(f"所有子评论已保存到 {output_path}！")
     else:
-        print(f"微博 {mid} 的子评论为空或抓取失败！")
+        print("没有抓取到任何子评论！")
 
     print("爬取完成。")
