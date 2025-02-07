@@ -31,6 +31,7 @@ HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
 }
 
+
 def extract_cookies(raw_cookie):
     """
     解析Cookies字符串为字典
@@ -43,20 +44,30 @@ def extract_cookies(raw_cookie):
             cookie_dict[key] = value
     return cookie_dict
 
+
+
 def clean_weibo_text(raw_html):
     """
     清理微博 HTML 内容，提取纯文本
     """
+    # 使用 BeautifulSoup 解析 HTML
     soup = BeautifulSoup(raw_html, 'html.parser')
+    
+    # 删除所有 <a> 链接
     for a_tag in soup.find_all('a'):
         a_tag.decompose()
+    
+    # 替换表情图标 (img) 的 alt 属性内容
     for img_tag in soup.find_all('img'):
         if img_tag.has_attr('alt'):
-            img_tag.replace_with(img_tag['alt'])
+            img_tag.replace_with(img_tag['alt'])  # 替换为表情的文本描述
         else:
-            img_tag.decompose()
+            img_tag.decompose()  # 如果没有 alt 属性，直接删除 img 标签
+    
+    # 提取纯文本内容
     clean_text = soup.get_text(separator=' ', strip=True)
     return clean_text
+
 
 def get_full_text(post_id, cookies):
     """
@@ -67,110 +78,70 @@ def get_full_text(post_id, cookies):
         response = requests.get(url, headers=HEADERS, cookies=cookies, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            return data.get('data', {}).get('longTextContent', '')
+            return data.get('data', {}).get('longTextContent', '')  # 返回长文内容
         else:
             logging.error(f"获取长微博失败，状态码：{response.status_code}")
     except Exception as e:
         logging.error(f"获取长微博失败，错误信息：{e}")
     return None
 
-def handle_captcha():
-    """
-    处理验证码逻辑，暂停程序等待用户手动验证并输入更新后的 cookies
-    """
-    print("检测到验证码触发，请手动完成验证...")
-    captcha_url = "https://m.weibo.cn/captcha"  # 假设验证码链接为此，需根据实际调整
-    print(f"请在浏览器中访问以下链接完成验证：{captcha_url}")
-    input("完成验证后按 Enter 键继续：")
-    new_cookies = input("请输入更新后的 cookies：")
-    logging.info("已更新 cookies，程序继续执行。")
-    return extract_cookies(new_cookies)
 
-def get_posts_by_keyword(keyword, cookies, page=1):
+    
+def get_posts_by_keyword(keyword, cookies, page=1, delay=2):
     """
     获取指定关键词的帖子，并清洗内容
     """
     posts = []
     params = {
-        'containerid': f'100103type=61&q={quote(keyword)}',
+        'containerid': f'100103type=61&q={quote(keyword)}',  # 使用实时分类 containerid
         'page': page
     }
 
-    max_retries = 200  # 最大重试次数
-    attempt = 0        # 当前已尝试次数
-
-    while attempt < max_retries:
+    retries = 20  # 重试次数                                                   
+    for attempt in range(retries):
         try:
             response = requests.get(BASE_API_URL, headers=HEADERS, cookies=cookies, params=params, timeout=10)
             if response.status_code != 200:
                 raise Exception(f"状态码异常: {response.status_code}")
 
+            print(f"请求 URL: {response.url}")  # 打印调试 URL
             data = response.json()
 
-            # 检测是否触发验证码
-            if data.get("ok") == -100:
-                logging.warning("触发验证码，暂停程序等待手动验证...")
-
-                # 如果已经是最后一次重试，则让用户手动输入新的 Cookies
-                if attempt == max_retries - 1:
-                    print("已达到最大重试次数，等待用户输入新的 cookies...")
-                    cookies = handle_captcha()  # 用户输入新的 cookies
-                    time.sleep(random.uniform(3, 7))  # 暂停一下
-                    # 不再使用递归，重置 attempt 以便继续在本循环内再次尝试
-                    attempt = 0
-                    continue
-                else:
-                    # 在未达到最大重试次数时，切换 cookies 并重试
-                    cookies = extract_cookies(random.choice(cookies_pool))
-                    time.sleep(random.uniform(3, 7))
-                    attempt += 1
-                    continue
-
-            # 若未触发验证码，则解析正常返回的帖子数据
+            # 解析帖子数据
             cards = data.get('data', {}).get('cards', [])
             for card in cards:
-                if card.get('card_type') == 9:
+                if card.get('card_type') == 9:  # 检查是否为帖子类型
                     mblog = card.get('mblog', {})
                     post_id = mblog.get('id')
-                    raw_text = mblog.get('text', '')
-                    cleaned_text = clean_weibo_text(raw_text)
+                    raw_text = mblog.get('text', '')  # 原始 HTML 文本
 
-                    # 如果是长微博，则获取完整文本
+                    # 调用清理函数提取纯文本内容
+                    clean_text = clean_weibo_text(raw_text)
+
+                    # 检查是否为长文，获取全文内容
                     if mblog.get('isLongText'):
                         full_text = get_full_text(post_id, cookies)
                         if full_text:
-                            cleaned_text = clean_weibo_text(full_text)
-
-                    # 提取用户链接、日期、评论数
-                    user_link = mblog.get('user', {}).get('profile_url', '')
-                    date_str = mblog.get('created_at', '')
-                    reply_count = mblog.get('comments_count', 0)
+                            clean_text = clean_weibo_text(full_text)
 
                     posts.append({
-                        'mid': post_id,
-                        'text': cleaned_text,
-                        'user_link': user_link,
-                        'date': date_str,
-                        'reply_count': reply_count
+                        'post_id': post_id,
+                        'text': clean_text
                     })
-
-            # 如果本次获取并解析成功，直接返回结果
-            return posts, cookies
+            return posts, cookies  # 返回帖子和当前 Cookies
 
         except Exception as e:
             logging.error(f'第 {page} 页解析失败，错误信息：{e}')
-            # 如果还没到最后一次重试，并且有可用的 cookies_pool，则尝试切换一个 Cookie
-            if attempt < max_retries - 1 and cookies_pool:
-                cookies = extract_cookies(random.choice(cookies_pool))
-                time.sleep(random.uniform(3, 7))
+            if attempt < retries - 1 and cookies_pool:
+                # 替换 Cookies 并继续尝试
+                new_cookies = extract_cookies(random.choice(cookies_pool))
+                print(f"切换 Cookies 重试: {new_cookies}")
+                cookies = new_cookies
+                time.sleep(2 ** attempt)  # 指数退避
             else:
-                # 否则不再重试，直接返回已有的数据
-                break
+                break  # 重试失败后退出
 
-        attempt += 1
-        time.sleep(random.uniform(3, 7))
-
-    # 如果多次尝试仍未成功获取或被中断，就返回当前已采集到的数据
+        time.sleep(delay)
     return posts, cookies
 
 
@@ -182,24 +153,27 @@ def get_all_posts_by_keyword(keyword, cookies, delay=2):
     page = 1
 
     while True:
-        posts, cookies = get_posts_by_keyword(keyword, cookies, page=page)
-        if not posts:
+        print(f'  获取第 {page} 页的帖子...')
+        posts, cookies = get_posts_by_keyword(keyword, cookies, page=page, delay=delay)
+
+        if not posts:  # 如果没有帖子，结束循环
+            print(f'  第 {page} 页无更多帖子。')
             break
+
         all_posts.extend(posts)
+        print(f'  获取到 {len(posts)} 篇帖子。')
+
         page += 1
-        
-        # 随机延时，模拟真实用户操作
-        time.sleep(random.uniform(3, 7))
+        time.sleep(1)  # 控制请求速率
 
     return all_posts
 
-def save_to_csv(data, filename):
-    """
-    将数据保存到 CSV 文件
-    """
-    df = pd.DataFrame(data)
-    df.to_csv(filename, index=False, encoding='utf-8-sig')
+
+def save_to_json(data, filename):
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
     print(f'数据已保存到 {filename}')
+
 
 def get_sub1(sss, duplicated_name, sub1_foldername):
     """
@@ -212,19 +186,35 @@ def get_sub1(sss, duplicated_name, sub1_foldername):
         df = pd.read_csv(duplicated_name)
     except Exception as e:
         logging.error(f'无法读取文件 {duplicated_name}，错误信息：{e}')
+        print(f"无法读取文件 {duplicated_name}，错误信息：{e}")
         return
 
     if 'word' not in df.columns:
         logging.error(f"CSV 文件 {duplicated_name} 中缺少 'word' 列。")
+        print(f"CSV 文件 {duplicated_name} 中缺少 'word' 列。")
         return
 
     hot_search_list = df['word'].tolist()
+
+    # 设置初始Cookies
     cookies = extract_cookies(sss)
 
     for idx, keyword in enumerate(hot_search_list, start=1):
+        print(f"\n处理热搜 {idx}/{len(hot_search_list)}: 关键词 '{keyword}'")
+
         posts = get_all_posts_by_keyword(keyword, cookies)
-        output_path = os.path.join(sub1_foldername, f'{keyword}.csv')
-        save_to_csv(posts, output_path)
+        print(f"  获取到 {len(posts)} 篇相关帖子。")
+
+        result = {
+            'keyword': keyword,
+            'posts': posts
+        }
+        output_path = os.path.join(sub1_foldername, f'{keyword}.json')
+        save_to_json(result, output_path)
+        print(f'话题 {keyword} 的帖子已保存到: {output_path}')
+
         time.sleep(2)
 
     print("帖子爬取完成。")
+
+

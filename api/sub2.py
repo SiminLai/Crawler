@@ -77,9 +77,12 @@ def get_secondary_comments(post_id):
 
     comments = []
     page = 1
-    retries = 500
+    retries = 200  # 这里示例设为5，实际可根据需要设置更大值
 
     while True:
+        # 用于标记当前页是否成功获取到有效数据
+        page_fetched_successfully = False
+
         for attempt in range(retries):
             try:
                 url = 'https://m.weibo.cn/api/comments/show'
@@ -92,42 +95,64 @@ def get_secondary_comments(post_id):
 
                 if response.status_code != 200:
                     logging.error(f"请求失败，状态码: {response.status_code}")
+                    # 继续重试当前页
+                    time.sleep(random.uniform(1, 3))
                     continue
 
                 data = response.json()
                 comment_list = data.get('data', {}).get('data', [])
 
+                # 如果触发验证码
                 if data.get("ok") == -100:
                     logging.warning("触发验证码，尝试更换 Cookies 或代理...")
+                    # 还没到最后一次重试，则换一个cookies再试
                     if attempt < retries - 1:
-                        cookies = extract_cookies(random.choice(cookies_pool))  # 从 Cookies 池中切换
-                        time.sleep(random.uniform(1, 3))  # 指数延时重试
+                        cookies = extract_cookies(random.choice(cookies_pool))
+                        time.sleep(random.uniform(1, 3))
+                        # 继续重试本页
                         continue
                     else:
-                        logging.error("多次尝试后仍触发验证码，放弃本次请求")
+                        # 到达最后一次重试仍失败 => 让用户手动输入新的Cookies
+                        logging.error("多次尝试后仍触发验证码，放弃本次请求，等待人工输入Cookies")
                         print(f"请访问以下链接并完成验证码验证: https://m.weibo.cn/{post_id}")
                         cookies_input = input("请输入新的 Cookies 并按回车键继续：")
                         cookies = extract_cookies(cookies_input)
                         logging.info("已更新新的 Cookies。")
-                        continue  # 用新 Cookies 继续尝试
+                        # 再次继续重试
+                        continue
 
+                # 如果本页没有评论，认为是最后一页或无法获取更多评论
                 if not comment_list:
                     logging.info(f"第 {page} 页无更多评论，爬取结束。")
+                    # 如果已有评论数据，返回合并；否则返回空DataFrame
                     return pd.concat(comments, ignore_index=True) if comments else pd.DataFrame()
 
+                # 能到这里说明本页获取成功
                 df = parse_secondary_comments(data)
                 if not df.empty:
                     comments.append(df)
 
+                # 标记成功，跳出重试循环
+                page_fetched_successfully = True
                 break
 
             except Exception as e:
                 logging.error(f"请求异常: {e}")
                 time.sleep(random.uniform(3, 7))
 
-        page += 1
-        time.sleep(random.uniform(3, 7))  # 控制请求速率
+        # for attempt in range(retries) 结束后，
+        # 如果依然没拿到有效数据，说明当前页多次重试都失败了
+        if not page_fetched_successfully:
+            logging.error(f"当前页({page})多次尝试仍未获取成功，结束爬取。")
+            # 根据需求，你也可以选择继续下一页，或者直接返回
+            return pd.concat(comments, ignore_index=True) if comments else pd.DataFrame()
 
+        # 如果本页成功获取，继续获取下一页
+        page += 1
+        # 休眠防止过快爬取
+        time.sleep(random.uniform(3, 7))
+
+    # 理论上不会执行到这里
     return pd.concat(comments, ignore_index=True) if comments else pd.DataFrame()
 
 # 主程序
